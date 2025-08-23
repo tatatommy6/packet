@@ -18,7 +18,7 @@ class SeqDS(Dataset):
     def __getitem__(self, i): return self.X[i], self.Y[i]
 
 class LSTMReg(nn.Module):
-    def __init__(self, in_dim, hidden=64, layers=1, out_dim=3, dropout=0.4):
+    def __init__(self, in_dim, hidden, layers, out_dim=3, dropout=0.4):
         super().__init__()
         self.lstm = nn.LSTM(in_dim, hidden, num_layers=layers, batch_first=True, dropout=dropout)
         self.head = nn.Sequential(nn.Linear(hidden, 128), nn.ReLU(), nn.Linear(128, out_dim))
