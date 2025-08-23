@@ -1,14 +1,18 @@
+#패킷 캡처 데이터 전처리
 import pandas as pd
 
-df = pd.read_csv('data/data_cafe.csv')
-# print(df.head())
+csv = "data/data_cafe.csv"
+
+#wireshark로 패킷 캡처한 csv 파일을 불러오기
+df = pd.read_csv(csv)
+
 df['Time'] = pd.to_numeric(df['Time'], errors = 'coerce')
 
 #10개를 한 묶음으로 만듦
 df["Interval"] = (df["Time"] // 10).astype(int)
 
-
 proto_counts = df.groupby(["Interval", "Protocol"]).size().unstack(fill_value=0)
+#proto_counts 안에는 DNS,HTTP,ICMP,MDNS...등이 있음 (unstack() 때문에)
 
 agg = df.groupby("Interval").agg(
     pkt_count=("Length", "count"),       # 패킷 개수
@@ -16,7 +20,9 @@ agg = df.groupby("Interval").agg(
     len_std=("Length", "std"),           # 길이 표준편차
     len_max=("Length", "max"),           # 최대 길이
 )
+#agg 안에는 Interval, pkt_count, len_mean, len_std, len_max가 있음
 
+# 두 데이터프레임을 합치는데 agg가 오른쪽에 proto_counts를 붙임
 result =  agg.join(proto_counts)
 
 # 비율 계산 (예: TCP/전체, UDP/전체)
@@ -27,14 +33,14 @@ for proto in ["TCP", "UDP"]:
 # 결측치를 0으로 채우기
 result = result.fillna(0)
 
-# 결과 확인
-print(result.head())
+# 결과 확인 (디버깅용)
+# print(result.head())
 
 # CSV로 저장
-result.to_csv("packets_10s.csv")
+result.to_csv("data/packets_10s.csv")
 
 
-# === 컬럼 설명 ===
+# --- 컬럼 설명 --- (by ChatGPT5)
 # Interval   : 10초 단위 구간 번호 (0=0~10초, 1=10~20초 ...)
 # pkt_count  : 해당 구간(10초) 동안 캡처된 패킷 개수
 # len_mean   : 패킷 크기(Length)의 평균 (Byte 단위)
@@ -54,4 +60,5 @@ result.to_csv("packets_10s.csv")
 #
 # tcp_ratio  : TCP 패킷 비율 (TCP / 전체 패킷 수)
 # udp_ratio  : UDP 패킷 비율 (UDP / 전체 패킷 수)
-#많은 컬럼이 생긴 이유: 11번 줄 때문인데 Protocol 컬럼에 여러 값이 들어있었고, unstack()이 그걸 전부 펼쳤기 때문.
+
+#많은 컬럼이 생긴 이유: 14번 줄 때문인데 Protocol 컬럼에 여러 값이 들어있었고, unstack()이 그걸 전부 펼쳤기 때문.
