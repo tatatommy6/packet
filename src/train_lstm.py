@@ -3,7 +3,7 @@
 # preprocess.py가 만든 .npz 파일을 읽어 PyTorch LSTM을 학습합니다.
 #
 # 사용법:
-#   python train_pytorch.py --data data/prepared.npz --epochs 30
+#   python train_lstm.py --data data/prepared.npz --epochs 30
 # ------------------------------------------------------------
 import argparse, math, os
 import numpy as np
@@ -18,7 +18,7 @@ class SeqDS(Dataset):
     def __getitem__(self, i): return self.X[i], self.Y[i]
 
 class LSTMReg(nn.Module):
-    def __init__(self, in_dim, hidden=128, layers=2, out_dim=3, dropout=0.2):
+    def __init__(self, in_dim, hidden=64, layers=1, out_dim=3, dropout=0.4):
         super().__init__()
         self.lstm = nn.LSTM(in_dim, hidden, num_layers=layers, batch_first=True, dropout=dropout)
         self.head = nn.Sequential(nn.Linear(hidden, 128), nn.ReLU(), nn.Linear(128, out_dim))
@@ -38,7 +38,7 @@ def main():
     ap.add_argument("--ckpt", default="models/lstm_qos.pt")
     args = ap.parse_args()
 
-    DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+    DEVICE = "mps" if torch.cuda.is_available() else "cpu"
     os.makedirs(os.path.dirname(args.ckpt) or ".", exist_ok=True)
 
     # 1) 데이터 로드
@@ -61,7 +61,7 @@ def main():
     in_dim, out_dim = X_tr.shape[-1], Y_tr.shape[-1]
     model = LSTMReg(in_dim, hidden=args.hidden, layers=args.layers, out_dim=out_dim).to(DEVICE)
     loss_fn = nn.HuberLoss(delta=1.0)
-    opt = torch.optim.Adam(model.parameters(), lr=args.lr)
+    opt = torch.optim.Adam(model.parameters(), lr=1e-3, weight_decay=1e-4)
 
     def run_epoch(dl, train=True):
         model.train(mode=train)
@@ -94,7 +94,7 @@ def main():
                 "scaler_scale": scaler_scale
             }, args.ckpt)
         if ep % 5 == 0 or ep == 1:
-            print(f"[{ep:02d}] train {tr:.4f} | valid {va:.4f}")
+            print(f"epoch: {ep:02d} train {tr:.4f} | valid {va:.4f}")
 
     # 3) 테스트 평가
     ckpt = torch.load(args.ckpt, map_location=DEVICE, weights_only=False)

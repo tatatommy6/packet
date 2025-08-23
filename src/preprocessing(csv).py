@@ -9,7 +9,7 @@ df = pd.read_csv(csv)
 df['Time'] = pd.to_numeric(df['Time'], errors = 'coerce')
 
 #10개를 한 묶음으로 만듦
-df["Interval"] = (df["Time"] // 10).astype(int)
+df["Interval"] = (df["Time"] // 1).astype(int)
 
 proto_counts = df.groupby(["Interval", "Protocol"]).size().unstack(fill_value=0)
 #proto_counts 안에는 DNS,HTTP,ICMP,MDNS...등이 있음 (unstack() 때문에)
