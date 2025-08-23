@@ -1,7 +1,7 @@
 #패킷 캡처 데이터 전처리
 import pandas as pd
 
-csv = "data/data_cafe.csv"
+csv = "data/data_cafe_59,29.csv"
 
 #wireshark로 패킷 캡처한 csv 파일을 불러오기
 df = pd.read_csv(csv)
@@ -37,7 +37,7 @@ result = result.fillna(0)
 # print(result.head())
 
 # CSV로 저장
-result.to_csv("data/packets_10s.csv")
+result.to_csv("data/packetsby10s_59m29s.csv")
 
 
 # --- 컬럼 설명 --- (by ChatGPT5)
