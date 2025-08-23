@@ -1,64 +1,101 @@
-#패킷 캡처 데이터 전처리
+# ------------------------------------------------------------
+# Interval 기반 CSV를 읽어 10초 시계열을 LSTM 입력 형식으로 변환하고
+# train/valid/test로 시간순 분할 + (train에만 fit한) StandardScaler 적용 후
+# 모두 .npz 파일로 저장합니다.
+#
+# 사용법:
+#   python preprocess.py --csv packets_10s.csv --out data/prepared.npz
+# 옵션:
+#   --lookback 12  (지난 12스텝 = 120초)
+#   --horizon 1    (다음 1스텝 = 10초)
+#   --topk_proto 6 (프로토콜 상위 K개만 피처에 포함)
+# ------------------------------------------------------------
+import argparse, os
+import numpy as np
 import pandas as pd
+from sklearn.preprocessing import StandardScaler
 
-csv = "data/data_cafe_59,29.csv"
+def make_sequences(X, Y, lookback=12, horizon=1):
+    Xs, Ys = [], []
+    for i in range(len(X) - lookback - horizon + 1):
+        Xs.append(X[i:i+lookback])
+        Ys.append(Y[i+lookback + horizon - 1])
+    return np.stack(Xs), np.stack(Ys)
 
-#wireshark로 패킷 캡처한 csv 파일을 불러오기
-df = pd.read_csv(csv)
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--csv", required=True)
+    ap.add_argument("--out", required=True)
+    ap.add_argument("--lookback", type=int, default=12)
+    ap.add_argument("--horizon", type=int, default=1)
+    ap.add_argument("--topk_proto", type=int, default=6)
+    args = ap.parse_args()
 
-df['Time'] = pd.to_numeric(df['Time'], errors = 'coerce')
+    os.makedirs(os.path.dirname(args.out), exist_ok=True)
 
-#10개를 한 묶음으로 만듦
-df["Interval"] = (df["Time"] // 10).astype(int)
+    # 1) CSV 로드
+    df = pd.read_csv(args.csv).fillna(0.0)
 
-proto_counts = df.groupby(["Interval", "Protocol"]).size().unstack(fill_value=0)
-#proto_counts 안에는 DNS,HTTP,ICMP,MDNS...등이 있음 (unstack() 때문에)
+    # 2) 피처/타깃 선정
+    base_feats = ["pkt_count","len_mean","len_std","len_max","tcp_ratio","udp_ratio"]
+    proto_candidates = ["TCP","UDP","DNS","QUIC","TLSv1.3","TLSv1.2","ICMP","HTTP","MDNS","NTP","OCSP"]
 
-agg = df.groupby("Interval").agg(
-    pkt_count=("Length", "count"),       # 패킷 개수
-    len_mean=("Length", "mean"),         # 평균 길이
-    len_std=("Length", "std"),           # 길이 표준편차
-    len_max=("Length", "max"),           # 최대 길이
-)
-#agg 안에는 Interval, pkt_count, len_mean, len_std, len_max가 있음
+    feature_cols = [c for c in base_feats if c in df.columns]
+    present_protos = [p for p in proto_candidates if p in df.columns]
+    if present_protos:
+        topK = list(df[present_protos].sum().sort_values(ascending=False).index[:args.topk_proto])
+        feature_cols += topK
 
-# 두 데이터프레임을 합치는데 agg가 오른쪽에 proto_counts를 붙임
-result =  agg.join(proto_counts)
+    target_cols = [c for c in ["pkt_count","tcp_ratio","udp_ratio"] if c in df.columns]
+    if not target_cols:
+        raise ValueError("타깃 컬럼이 없습니다. (pkt_count/tcp_ratio/udp_ratio 중 하나 필요)")
 
-# 비율 계산 (예: TCP/전체, UDP/전체)
-for proto in ["TCP", "UDP"]:
-    if proto in result.columns:
-        result[f"{proto.lower()}_ratio"] = result[proto] / result["pkt_count"]
+    X_all = df[feature_cols].astype(np.float32).values
+    Y_all = df[target_cols].astype(np.float32).values
 
-# 결측치를 0으로 채우기
-result = result.fillna(0)
+    # 3) 시퀀스화
+    X_seq, Y_seq = make_sequences(X_all, Y_all, args.lookback, args.horizon)
+    N = len(X_seq)
+    if N <= 50:
+        raise ValueError(f"시퀀스 샘플 수가 너무 적습니다. (현재 {N}) 더 오래 수집하거나 lookback/horizon 조정 필요")
 
-# 결과 확인 (디버깅용)
-# print(result.head())
+    # 4) 시간순 분할
+    tr_end = int(N*0.7)
+    va_end = int(N*0.85)
+    X_tr_raw, Y_tr = X_seq[:tr_end], Y_seq[:tr_end]
+    X_va_raw, Y_va = X_seq[tr_end:va_end], Y_seq[tr_end:va_end]
+    X_te_raw, Y_te = X_seq[va_end:], Y_seq[va_end:]
 
-# CSV로 저장
-result.to_csv("data/packetsby10s_59m29s.csv")
+    # 5) StandardScaler (train에만 fit)
+    B, T, F = X_tr_raw.shape
+    scaler = StandardScaler()
+    X_tr = scaler.fit_transform(X_tr_raw.reshape(-1, F)).reshape(B, T, F)
 
+    def transform_block(X_raw):
+        b, t, f = X_raw.shape
+        return scaler.transform(X_raw.reshape(-1, f)).reshape(b, t, f)
 
-# --- 컬럼 설명 --- (by ChatGPT5)
-# Interval   : 10초 단위 구간 번호 (0=0~10초, 1=10~20초 ...)
-# pkt_count  : 해당 구간(10초) 동안 캡처된 패킷 개수
-# len_mean   : 패킷 크기(Length)의 평균 (Byte 단위)
-# len_std    : 패킷 크기의 표준편차 (패킷 크기 변동성)
-# len_max    : 해당 구간에서 가장 큰 패킷 크기 (보통 MTU=1514 근처)
-#
-# DNS        : DNS 패킷 개수 (도메인 → IP 변환 요청)
-# HTTP       : HTTP 패킷 개수 (암호화 안 된 웹 요청, 거의 드묾)
-# ICMP       : ICMP 패킷 개수 (ping 프로토콜)
-# MDNS       : Multicast DNS 패킷 (로컬 네트워크 장치 검색)
-# QUIC       : QUIC 패킷 개수 (UDP 기반, HTTP/3, 유튜브/넷플릭스 등)
-# SSLv2      : SSLv2 패킷 개수 (거의 사용되지 않음, 분석 큰 의미 없음)
-# TCP        : TCP 패킷 개수 (웹, 다운로드, 전송 대부분)
-# TLSv1.2    : TLS 1.2 패킷 개수 (구버전 HTTPS 트래픽)
-# TLSv1.3    : TLS 1.3 패킷 개수 (최신 HTTPS 트래픽, 많이 사용됨)
-# UDP        : UDP 패킷 개수 (게임, 스트리밍, 음성통화 등 실시간 서비스)
-#
-# tcp_ratio  : TCP 패킷 비율 (TCP / 전체 패킷 수)
-# udp_ratio  : UDP 패킷 비율 (UDP / 전체 패킷 수)
+    X_va = transform_block(X_va_raw)
+    X_te = transform_block(X_te_raw)
 
-#많은 컬럼이 생긴 이유: 14번 줄 때문인데 Protocol 컬럼에 여러 값이 들어있었고, unstack()이 그걸 전부 펼쳤기 때문.
+    # 6) 저장 (.npz)
+    np.savez_compressed(
+        args.out,
+        X_tr=X_tr, Y_tr=Y_tr,
+        X_va=X_va, Y_va=Y_va,
+        X_te=X_te, Y_te=Y_te,
+        feature_cols=np.array(feature_cols, dtype=object),
+        target_cols=np.array(target_cols, dtype=object),
+        lookback=np.array([args.lookback]),
+        horizon=np.array([args.horizon]),
+        scaler_mean=scaler.mean_,
+        scaler_scale=scaler.scale_
+    )
+
+    print(f"[OK] Saved -> {args.out}")
+    print(f"Samples: train={len(X_tr)}, valid={len(X_va)}, test={len(X_te)}")
+    print("Features:", feature_cols)
+    print("Targets :", target_cols)
+
+if __name__ == "__main__":
+    main()
