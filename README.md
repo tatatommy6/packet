@@ -5,18 +5,6 @@
 
 ---
 
-## 📑 Table of Contents
-- [Introduction](#introduction)
-- [Dataset](#dataset)
-- [Preprocessing](#preprocessing)
-- [Model](#model)
-- [Results](#results)
-- [How to Run](#how-to-run)
-- [Project Structure](#project-structure)
-- [Future Work](#future-work)
-- [License](#license)
-
----
 
 ## 🔎 Introduction
 - 공용/가정망에서 발생하는 네트워크 품질(QoS) 변동을 시계열 관점에서 분석
