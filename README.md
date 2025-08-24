@@ -1,36 +1,53 @@
-# 📡 Network QoS Prediction with LSTM
+# 📡 DDoS Early Warning with LSTM
 
-> **카페/가정 네트워크 환경에서 패킷 데이터를 수집하고, 10초 단위로 집계한 후  
-> LSTM 모델을 이용해 QoS(패킷 수, TCP/UDP 비율, 지연 등)를 예측하는 프로젝트**
+> **카페/가정/캠퍼스 네트워크에서 패킷을 10초 단위로 집계하고,  
+> LSTM으로 다음 구간의 트래픽 특성(패킷 수, TCP/UDP 비율)을 예측해  
+> DDoS 전조를 조기 감지하는 '경량' 프로젝트**  
+> *(원래 QoS(최종 사용자에게 제공되는 네트워크 품질) 예측 프로젝트에서 학습·분석 결과를 바탕으로 DDoS 조기경보로 피벗)*
 
 ---
-
 
 ## 🔎 Introduction
-- 공용/가정망에서 발생하는 네트워크 품질(QoS) 변동을 시계열 관점에서 분석
-- 패킷 단위 데이터를 10초 구간으로 집계 → LSTM 데이터셋으로 사용
-- 목표: 다음 10초 구간의 트래픽 특성(패킷 수, TCP/UDP 비율 등) 또는 RTT(네트워크 왕복 시간) 예측
+- 공용/가정망에서 발생하는 **트래픽 구성 변화**(특히 UDP 급증)를 시계열로 분석
+- 패킷 데이터를 **10초 윈도우**로 집계 → LSTM이 처리할 **(N, T, F)** 시퀀스로 변환
+- **목표:** 다음 10초의 `pkt_count`, `tcp_ratio`, `udp_ratio`를 예측하여 **조기경보 트리거**에 활용
+- **현재 상태:**  
+  - 모델 학습 완료 ✅  
+  - 테스트셋에서 **비율 예측 MAE ≈ 0.10~0.12** 확인  
+  - **실전(실시간) 테스트는 아직 미실시** ⚠️
 
 ---
 
-## 📂 Dataset
-- **수집 도구**: Wireshark
-- **원본 포맷**: `.pcapng`
-- **가공 포맷**: `.csv`
-- **집계 방식**: 10초 단위 Interval 집계
-  - `pkt_count`: 패킷 개수
-  - `len_mean`, `len_std`, `len_max`
-  - `Protocol counts`: TCP, UDP, DNS, QUIC, TLSv1.3 ...
-  - `tcp_ratio`, `udp_ratio`
+## 🎯 Why (왜 만들었나)
+- **다운타임 = 직접적인 손실**  
+- 중소규모 환경(소상공인, 학원, 동호회 서버 등)도 **UDP/소형 패킷 급증** 같은 **공격 전조**가 발생할 수 있음  
+- 상용 방어 제품은 “발생 시 완화”에 강점 → 본 프로젝트는 **온프레미스에서 가볍게 돌릴 수 있는 조기경보**에 초점
 
 ---
 
-## 🛠 Preprocessing
-1. Wireshark CSV export (`No, Time, Source, Destination, Protocol, Length, Info`)
-2. 10초 단위 Interval 집계 (pandas)
-   
---현재 여기까지 완료--
+## 🧱 How It Works
+1. **데이터 수집 & 집계**  
+   - 패킷 캡처 후 10초 단위 집계 (Wireshark, tshark 등 활용)
+   - 집계 지표: `pkt_count`, `len_mean`, `len_std`, `len_max`, `tcp_ratio`, `udp_ratio` + 주요 프로토콜 비율  
 
-3. Feature scaling (`StandardScaler`)
-4. Dataset split (Train 70%, Valid 15%, Test 15%, 시간순 유지)
+2. **전처리 & 시퀀스 변환**  
+   - `.csv` → `.npz` 변환  
+   - 슬라이딩 윈도우로 `(샘플 수 N, lookback T, feature 수 F)` 시퀀스 생성  
+   - StandardScaler로 정규화  
 
+3. **모델 학습 (PyTorch LSTM)**  
+   - 입력: 과거 lookback 구간 (예: 24스텝 = 240초)  
+   - 출력: 다음 구간의 QoS 지표  
+   - 손실: HuberLoss, 최적화: Adam  
+
+4. **성능 평가**  
+   - Validation: MAE 기준 **tcp/udp ≈ 0.10 ~ 0.12**  
+   - Baseline 대비 **80% 이상 향상**  
+
+---
+
+## 🚧 Current Status
+- ✅ LSTM 모델 구현 및 학습 완료  
+- ✅ 테스트셋 성능 검증 완료  
+- ⚠️ 실시간 네트워크에서의 **실전 테스트는 진행 전**  
+- ǁ 추후 계획: 실시간 경보 시스템(예: 알림, 차단 룰 연동) 적용
