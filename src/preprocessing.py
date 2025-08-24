@@ -23,7 +23,7 @@ from sklearn.preprocessing import StandardScaler
 # i=1 -> X:    t1,t2,t3 / Y: t(1+3+2-1) = t5
 # i=2 -> X:       t2,t3,t4 / Y: t(2+3+2-1) = t6
 # 이렇게 돌아간다~
-def make_sequences(X, Y, lookback=24, horizon=1):
+def make_sequences(X, Y, lookback=12, horizon=1):
     Xseq, Yseq = [], []
     for i in range(len(X) - lookback - horizon + 1): # N
         Xseq.append(X[i:i+lookback]) #입력 시퀀스는 i에서 시작해 lookback만큼의 과거 구간 
@@ -33,10 +33,10 @@ def make_sequences(X, Y, lookback=24, horizon=1):
 def main(): #터미널에서 쓸 argument 정의
     ap = argparse.ArgumentParser()
     ap.add_argument("--csv", required=True)
-    ap.add_argument("--out", required=True)
-    ap.add_argument("--lookback", type=int, default=24)
+    ap.add_argument("--output", required=True)
+    ap.add_argument("--lookback", type=int, default=12)
     ap.add_argument("--horizon", type=int, default=1)
-    ap.add_argument("--topk_proto", type=int, default=10)
+    ap.add_argument("--topk_proto", type=int, default=6)
     args = ap.parse_args()
 
     os.makedirs(os.path.dirname(args.out), exist_ok=True) #출력 폴더가 없으면 생성
@@ -76,19 +76,16 @@ def main(): #터미널에서 쓸 argument 정의
 # 몇 개의 샘플(N)을 만들 수 있는지: N = 전체 길이 L - 입력 길이 lookback - horizon + 1
 
     # 시간순 분할
-    train_end = int(N*0.7)
-    valid_end = int(N*0.85)
+    train_end = int(N*0.7)  # 훈련데이터
+    valid_end = int(N*0.85) # 검증데이터
 
     input_train_raw, answer_train = input_seq[:train_end], answer_seq[:train_end]
     input_valid_raw, answer_valid = input_seq[train_end:valid_end], answer_seq[train_end:valid_end]
-    input_test_raw,  answer_test  = input_seq[valid_end:],        answer_seq[valid_end:]
+    input_test_raw, answer_test = input_seq[valid_end:], answer_seq[valid_end:]
 
-    # ---------- StandardScaler: train에만 fit, 같은 스케일러로 모두 transform ----------
+    # StandardScaler (train에만 fit)
     B, T, F = input_train_raw.shape
-    scaler = StandardScaler()
-    scaler.fit(input_train_raw.reshape(-1, F))  # train의 분포로만 학습
-
-    input_train = scaler.transform(input_train_raw.reshape(-1, F)).reshape(B, T, F).astype(np.float32)
+    input_train = StandardScaler().fit_transform(input_train_raw.reshape(-1, F)).reshape(B, T, F)
 
 # b (batch size)
 # 샘플 개수 (시퀀스 개수, 즉 N)
@@ -105,26 +102,25 @@ def main(): #터미널에서 쓸 argument 정의
 # X_raw.shape = (1000, 12, 8) 이라면 
 # b=1000, t=12, f=8
 
-    def transform_block_with(same_scaler, input_raw):
-            b, t, f = input_raw.shape
-            scaled = same_scaler.transform(input_raw.reshape(-1, f)).reshape(b, t, f)
-            return scaled.astype(np.float32)
+    def transform_block(input_raw):
+        b, t, f = input_raw.shape
+        return StandardScaler().transform(input_raw.reshape(-1, f)).reshape(b, t, f)
 
-    input_valid = transform_block_with(scaler, input_valid_raw)
-    input_test  = transform_block_with(scaler, input_test_raw)
+    input_valid = transform_block(input_valid_raw)
+    input_test = transform_block(input_test_raw)
 
-        # ---------- 저장 (.npz): fit된 scaler의 파라미터를 저장 ----------
+    # 저장 (.npz)
     np.savez_compressed(
         args.out,
         X_tr = input_train, Y_tr = answer_train,
         X_va = input_valid, Y_va = answer_valid,
-        X_te = input_test,  Y_te = answer_test,
+        X_te = input_test, Y_te = answer_test,
         feature_cols=np.array(feature_cols, dtype=object),
         target_cols=np.array(target_cols, dtype=object),
         lookback=np.array([args.lookback]),
         horizon=np.array([args.horizon]),
-        scaler_mean=scaler.mean_.astype(np.float32),
-        scaler_scale=scaler.scale_.astype(np.float32)
+        scaler_mean=StandardScaler().mean_,
+        scaler_scale=StandardScaler().scale_
     )
 
     print(f"Saved -> {args.out}")

@@ -18,23 +18,14 @@ class SeqDS(Dataset):
     def __getitem__(self, i): return self.X[i], self.Y[i]
 
 class LSTMReg(nn.Module):
-    def __init__(self, in_dim, hidden, layers, out_dim=3, dropout=0.45, head_dropout=0.25):
+    def __init__(self, in_dim, hidden, layers, out_dim=3, dropout=0.4):
         super().__init__()
-        self.lstm = nn.LSTM(in_dim, hidden, num_layers=layers,
-                            batch_first=True, dropout=dropout)  # layers>=2일 때만 적용
-        self.head = nn.Sequential(
-            nn.LayerNorm(hidden),
-            nn.Dropout(head_dropout),
-            nn.Linear(hidden, 128),
-            nn.ReLU(),
-            nn.Dropout(head_dropout),
-            nn.Linear(128, out_dim),
-        )
-
+        self.lstm = nn.LSTM(in_dim, hidden, num_layers=layers, batch_first=True, dropout=dropout)
+        self.head = nn.Sequential(nn.Linear(hidden, 128), nn.ReLU(), nn.Linear(128, out_dim))
     def forward(self, x):
-        out, _ = self.lstm(x)
-        h = out[:, -1]
-        return self.head(h)
+        out, _ = self.lstm(x)     # (B,T,H)
+        h = out[:, -1]            # 마지막 스텝
+        return self.head(h)       # (B,out_dim)
 
 def main():
     ap = argparse.ArgumentParser()
@@ -42,28 +33,12 @@ def main():
     ap.add_argument("--epochs", type=int, default=30)
     ap.add_argument("--batch", type=int, default=64)
     ap.add_argument("--lr", type=float, default=1e-3)
-    ap.add_argument("--hidden", type=int, default=512)
+    ap.add_argument("--hidden", type=int, default=128)
     ap.add_argument("--layers", type=int, default=2)
-    ap.add_argument("--dropout", type=float, default=0.35)
-    ap.add_argument("--head_dropout", type=float, default=0.25)
-    ap.add_argument("--ckpt", default="models/lstm.pt")
+    ap.add_argument("--ckpt", default="models/lstm_qos.pt")
     args = ap.parse_args()
 
-    import random
-    def fix_seed(seed=42):
-        random.seed(seed); np.random.seed(seed); torch.manual_seed(seed)
-        if torch.cuda.is_available(): torch.cuda.manual_seed_all(seed)
-        torch.use_deterministic_algorithms(True)
-    fix_seed(42)
-
-
-    if torch.backends.mps.is_available():
-        DEVICE = torch.device("mps")
-    elif torch.cuda.is_available():
-        DEVICE = torch.device("cuda")
-    else:
-        DEVICE = torch.device("cpu")
-
+    DEVICE = "mps" if torch.cuda.is_available() else "cpu"
     os.makedirs(os.path.dirname(args.ckpt) or ".", exist_ok=True)
 
     # 1) 데이터 로드
@@ -102,59 +77,24 @@ def main():
                     opt.step()
             tot += loss.item() * len(xb); n += len(xb)
         return tot / max(n,1)
-# --- 검증 MAE (타깃별) 계산 함수 ---
-    def epoch_mae_vec(dl):
-        model.eval()
-        k = len(target_cols)
-        tot = torch.zeros(k)  # CPU 상에서 누적
-        n = 0
-        with torch.no_grad():
-            for xb, yb in dl:
-                xb = xb.to(DEVICE)
-                pred = model(xb).cpu()          # (B,3)
-                tot += torch.abs(pred - yb).sum(dim=0)  # 타깃별 합
-                n += len(yb)
-        return (tot / max(n, 1)).numpy()        # [pkt, tcp, udp]
 
-    # --- 가중치 (중요도에 맞춰 조절 가능) ---
-    w = np.array([1.7, 1.0, 1.0], dtype=np.float32)  # 예: pkt 덜 중요하면 [0.5,1.0,1.0] 등
-
-    best_score = float('inf')   # MAE·w 가중합 기준
-    best_ep = -1
-    best_va_huber = float('inf')
-
-    for ep in range(1, args.epochs + 1):
-        tr_huber = run_epoch(dl_tr, True)          # 학습 손실(Huber, mean)
-        va_huber = run_epoch(dl_va, False)         # 검증 손실(Huber, mean)
-        va_mae_vec = epoch_mae_vec(dl_va)          # [pkt, tcp, udp] MAE
-        va_score   = float((va_mae_vec * w).sum()) # 저장 판단용 점수
-
-        improved = va_score < best_score
-        if improved:
-            best_score = va_score
-            best_ep = ep
-            best_va_huber = va_huber
-            state = {
+    best_va = math.inf
+    for ep in range(1, args.epochs+1):
+        tr = run_epoch(dl_tr, True)
+        va = run_epoch(dl_va, False)
+        if va < best_va:
+            best_va = va
+            torch.save({
                 "model": model.state_dict(),
-                "epoch": ep,
-                "val_huber": va_huber,
-                "val_mae_vec": va_mae_vec,
-                "val_score": best_score,
-                "weights": w,
                 "feature_cols": feature_cols,
                 "target_cols": target_cols,
                 "lookback": lookback,
                 "horizon": horizon,
                 "scaler_mean": scaler_mean,
-                "scaler_scale": scaler_scale,
-            }
-            torch.save(state, args.ckpt)
-            print(f"[BEST] epoch={ep} val_score(MAE·w)={va_score:.4f} "
-                f"vec={np.round(va_mae_vec, 4)}")
-
+                "scaler_scale": scaler_scale
+            }, args.ckpt)
         if ep % 5 == 0 or ep == 1:
-            print(f"epoch: {ep:02d} train(huber) {tr_huber:.4f} | valid(huber) {va_huber:.4f} "
-                f"| valid(MAE·sum) {va_mae_vec.sum():.4f} | best@{best_ep} {best_score:.4f}")
+            print(f"epoch: {ep:02d} train {tr:.4f} | valid {va:.4f}")
 
     # 3) 테스트 평가
     ckpt = torch.load(args.ckpt, map_location=DEVICE, weights_only=False)
@@ -171,9 +111,9 @@ def main():
     print("\n=== Test MAE per target ===")
     for name, m in zip(target_cols, mae):
         print(f"{name}: {m:.4f}")
-    # print("\nSaved:", args.ckpt)
-    # print("Features used:", feature_cols)
-    # print("Targets:", target_cols)
+    print("\nSaved:", args.ckpt)
+    print("Features used:", feature_cols)
+    print("Targets:", target_cols)
 
 if __name__ == "__main__":
     main()
