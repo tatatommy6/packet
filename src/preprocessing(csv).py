@@ -1,7 +1,7 @@
 #패킷 캡처 데이터 전처리
 import pandas as pd
 
-csv = "data/data_cafe_59,29.csv"
+csv = "data/house_cleaned.csv"
 
 #wireshark로 패킷 캡처한 csv 파일을 불러오기
 df = pd.read_csv(csv)
@@ -9,7 +9,7 @@ df = pd.read_csv(csv)
 df['Time'] = pd.to_numeric(df['Time'], errors = 'coerce')
 
 #10개를 한 묶음으로 만듦
-df["Interval"] = (df["Time"] // 1).astype(int)
+df["Interval"] = (df["Time"] // 10).astype(int)
 
 proto_counts = df.groupby(["Interval", "Protocol"]).size().unstack(fill_value=0)
 #proto_counts 안에는 DNS,HTTP,ICMP,MDNS...등이 있음 (unstack() 때문에)
@@ -37,7 +37,7 @@ result = result.fillna(0)
 # print(result.head())
 
 # CSV로 저장
-result.to_csv("data/packetsby10s_59m29s.csv")
+result.to_csv("data/packetsby10s_9h.csv")
 
 
 # --- 컬럼 설명 --- (by ChatGPT5)
