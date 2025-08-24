@@ -5,24 +5,33 @@
 # 사용법:
 #   python train_lstm.py --data data/prepared.npz --epochs 30
 # ------------------------------------------------------------
+import random
 import argparse, math, os
 import numpy as np
 import torch, torch.nn as nn
 from torch.utils.data import Dataset, DataLoader
 
-class SeqDS(Dataset):
-    def __init__(self, X, Y):
-        self.X = torch.tensor(X, dtype=torch.float32)
-        self.Y = torch.tensor(Y, dtype=torch.float32)
-    def __len__(self): return len(self.X)
-    def __getitem__(self, i): return self.X[i], self.Y[i]
+# 입력된 시계열 데이터(X)와 타깃(Y)을 DataLoader가 읽을 수 있게 포장하는 클래스
+class SeqDS(Dataset): # torch.utils.data.Dataset를 상속한 커스텀 데이터셋 정의.
+    def __init__(self, input, answers):
+        #넘파이 input, answers를 torch 텐서로 변환
+        # dtype = torch.float32 로 명시적으로 지정(딥러닝에서 효율이 좋음)
+        self.input = torch.tensor(input, dtype=torch.float32)
+        self.answers = torch.tensor(answers, dtype=torch.float32)
 
+    def __len__(self): return len(self.input) # 데이터셋 길이 반환. DataLoader가 배치 개수 등을 계산할 때 사용. 여기서 return 값은 N(샘플) 수 
+    def __getitem__(self, i): return self.input[i], self.answers[i] # 인덱스 i에 해당하는 (입력, 정답) 쌍 반환. DataLoader가 배치 생성 시 사용.
+
+# 이 부분은 저번에 주식이랑 torch.nn라이브러리 찍먹할 때 한번 설명 한적이 있어요
+# 그래도 다시 합시다
+
+# LSTM 모델 정의
 class LSTMReg(nn.Module):
     def __init__(self, in_dim, hidden, layers, out_dim=3, dropout=0.45, head_dropout=0.25):
-        super().__init__()
+        super().__init__() # 부모 클래스의 __init__()을 실행시켜서, 상속받은 기능을 제대로 초기화해주는 코드
         self.lstm = nn.LSTM(in_dim, hidden, num_layers=layers,
-                            batch_first=True, dropout=dropout)  # layers>=2일 때만 적용
-        self.head = nn.Sequential(
+                            batch_first=True, dropout=dropout)  # layers >= 2일 때만 적용
+        self.head = nn.Sequential( # 여러 레이어를 순서대로 연결해서 모델을 간단하게 만드는 컨테이너
             nn.LayerNorm(hidden),
             nn.Dropout(head_dropout),
             nn.Linear(hidden, 128),
@@ -31,14 +40,17 @@ class LSTMReg(nn.Module):
             nn.Linear(128, out_dim),
         )
 
+    #LSTM 출력 -> 마지막 시점 벡터 뽑기 -> 최종 예측층 통과
     def forward(self, x):
         out, _ = self.lstm(x)
         h = out[:, -1]
         return self.head(h)
 
-def main():
+def main(): 
+    #전처리 코드에 있는것과 똑같은 어규먼트 설정 코드
+    #직관적으로 보임. 굳이 주석 안달아도 알 수 있죠?
     ap = argparse.ArgumentParser()
-    ap.add_argument("--data", required=True)           # preprocess.py 결과 .npz
+    ap.add_argument("--data", required=True)
     ap.add_argument("--epochs", type=int, default=30)
     ap.add_argument("--batch", type=int, default=64)
     ap.add_argument("--lr", type=float, default=1e-3)
@@ -46,23 +58,27 @@ def main():
     ap.add_argument("--layers", type=int, default=2)
     ap.add_argument("--dropout", type=float, default=0.35)
     ap.add_argument("--head_dropout", type=float, default=0.25)
-    ap.add_argument("--ckpt", default="models/lstm.pt")
+    ap.add_argument("--ckpt", default="models/lstm.pt") #파일 저장 경로 설정 어규먼트
     args = ap.parse_args()
 
-    import random
+    # 새롭게 알게 된 사실: 한줄이 아닌 코드를 한줄로 쓸때는 세미콜론 필수
+    # 아래 함수에 보면 시드 고정을 위해 파이썬 기본 random, numpy random, torch random 다 쓰는데
+    # 이유는 학습때 쓰이는 랜덤 소스가 어려가지이기 때문임
     def fix_seed(seed=42):
-        random.seed(seed); np.random.seed(seed); torch.manual_seed(seed)
-        if torch.cuda.is_available(): torch.cuda.manual_seed_all(seed)
+        random.seed(seed) # python 기본 random은 데이터 섞기나 샘플링에 쓰임
+        np.random.seed(seed) # 전처리·수치 계산 단계에서 종종 사용
+        torch.manual_seed(seed) # PyTorch의 기본 RNG는 (주로 CPU, MPS 포함)에 시드 설정
+        if torch.cuda.is_available(): torch.cuda.manual_seed_all(seed) # 이건 CUDA(GPU) RNG 전체에 시드 설정(지금은 mps쓰니까 상관 없음)
         torch.use_deterministic_algorithms(True)
     fix_seed(42)
 
 
     if torch.backends.mps.is_available():
         DEVICE = torch.device("mps")
-    elif torch.cuda.is_available():
-        DEVICE = torch.device("cuda")
     else:
         DEVICE = torch.device("cpu")
+
+    print("Using device:", DEVICE)
 
     os.makedirs(os.path.dirname(args.ckpt) or ".", exist_ok=True)
 
@@ -123,7 +139,7 @@ def main():
     best_ep = -1
     best_va_huber = float('inf')
 
-    for ep in range(1, args.epochs + 1):
+    for ep in range(1, args.epochs + 1): #어규먼트에서 받은 에폭 수 + 1 만큼 반복
         tr_huber = run_epoch(dl_tr, True)          # 학습 손실(Huber, mean)
         va_huber = run_epoch(dl_va, False)         # 검증 손실(Huber, mean)
         va_mae_vec = epoch_mae_vec(dl_va)          # [pkt, tcp, udp] MAE
