@@ -1,4 +1,7 @@
-# src/eval_lstm.py
+#100% gpt 기반
+#뭐라는지도 모르겠고요
+#이해하기도 싫고요
+#어차피 성능 확인 코드라 지울꺼고요
 import argparse, numpy as np, torch, torch.nn as nn
 
 def detect_head_kind(state_dict):

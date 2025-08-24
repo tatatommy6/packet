@@ -1,3 +1,4 @@
+#이런 ㅈ밥 코드는 주석 안달아요.
 import pandas as pd
 
 load_csv = "data/house.csv"
