@@ -4,7 +4,7 @@
 # 모두 .npz 파일로 저장함
 #
 # 사용법(예시):
-#   python src/preprocessing.py --csv data/packetsby10s_59m29s.csv --out data/prepared.npz
+#   python src/preprocessing(csv_to_npz).py --csv data/packetsby10s_59m29s.csv --out data/prepared.npz
 # 옵션:
 #   --lookback 12  (지난 12스텝 = 120초)
 #   --horizon 1    (다음 1스텝 = 10초)
