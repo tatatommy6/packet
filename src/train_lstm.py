@@ -6,7 +6,7 @@
 #   python train_lstm.py --data data/prepared.npz --epochs 30
 # ------------------------------------------------------------
 import random
-import argparse, math, os
+import argparse, os
 import numpy as np
 import torch, torch.nn as nn
 from torch.utils.data import Dataset, DataLoader
@@ -20,13 +20,13 @@ class SeqDS(Dataset): # torch.utils.data.Dataset를 상속한 커스텀 데이�
         self.answers = torch.tensor(answers, dtype=torch.float32)
 
     def __len__(self): return len(self.input) # 데이터셋 길이 반환. DataLoader가 배치 개수 등을 계산할 때 사용. 여기서 return 값은 N(샘플) 수 
-    def __getitem__(self, i): return self.input[i], self.answers[i] # 인덱스 i에 해당하는 (입력, 정답) 쌍 반환. DataLoader가 배치 생성 시 사용.
+    def __getitem__(self, i): return self.input[i], self.answers[i] # 인덱스 i에 해당하는 (입력(X), 정답(Y)) 쌍 반환. DataLoader가 배치 생성 시 사용.
 
 # 이 부분은 저번에 주식이랑 torch.nn라이브러리 찍먹할 때 한번 설명 한적이 있어요
 # 그래도 다시 합시다
 
 # LSTM 모델 정의
-class LSTMReg(nn.Module):
+class LSTMDef(nn.Module):
     def __init__(self, in_dim, hidden, layers, out_dim=3, dropout=0.45, head_dropout=0.25):
         super().__init__() # 부모 클래스의 __init__()을 실행시켜서, 상속받은 기능을 제대로 초기화해주는 코드
         self.lstm = nn.LSTM(in_dim, hidden, num_layers=layers,
@@ -64,9 +64,9 @@ def main():
     # 새롭게 알게 된 사실: 한줄이 아닌 코드를 한줄로 쓸때는 세미콜론 필수
     # 아래 함수에 보면 시드 고정을 위해 파이썬 기본 random, numpy random, torch random 다 쓰는데
     # 이유는 학습때 쓰이는 랜덤 소스가 어려가지이기 때문임
-    def fix_seed(seed=42):
-        random.seed(seed) # python 기본 random은 데이터 섞기나 샘플링에 쓰임
-        np.random.seed(seed) # 전처리·수치 계산 단계에서 종종 사용
+    def fix_seed(seed):
+        random.seed(seed) # python 기본 RNG(난수생성기)는 데이터 섞기나 샘플링에 쓰임
+        np.random.seed(seed) # numpy RNG는 전처리·수치 계산 단계에서 종종 사용
         torch.manual_seed(seed) # PyTorch의 기본 RNG는 (주로 CPU, MPS 포함)에 시드 설정
         if torch.cuda.is_available(): torch.cuda.manual_seed_all(seed) # 이건 CUDA(GPU) RNG 전체에 시드 설정(지금은 mps쓰니까 상관 없음)
         torch.use_deterministic_algorithms(True)
@@ -83,15 +83,17 @@ def main():
     os.makedirs(os.path.dirname(args.ckpt) or ".", exist_ok=True)
 
     # 1) 데이터 로드
-    data = np.load(args.data, allow_pickle=True)
+    data = np.load(args.data, allow_pickle=True) # pickle이란: 텍스트 상태의 데이터가 아닌 파이썬 객체 자체를 '파일'로 저장하는 것
+
+    # 딕셔너리 형태로 저장된 데이터에서 키를 이용해 값(데이터셋) 추출해서 변수에 담음
     X_tr, Y_tr = data["X_tr"], data["Y_tr"]
     X_va, Y_va = data["X_va"], data["Y_va"]
     X_te, Y_te = data["X_te"], data["Y_te"]
     feature_cols = list(data["feature_cols"])
-    target_cols  = list(data["target_cols"])
-    lookback     = int(data["lookback"][0])
-    horizon      = int(data["horizon"][0])
-    scaler_mean  = data["scaler_mean"]
+    target_cols = list(data["target_cols"])
+    lookback = int(data["lookback"][0])
+    horizon = int(data["horizon"][0])
+    scaler_mean = data["scaler_mean"]
     scaler_scale = data["scaler_scale"]
 
     dl_tr = DataLoader(SeqDS(X_tr, Y_tr), batch_size=args.batch, shuffle=True, drop_last=True)
@@ -100,18 +102,33 @@ def main():
 
     # 2) 모델/학습 준비
     in_dim, out_dim = X_tr.shape[-1], Y_tr.shape[-1]
-    model = LSTMReg(in_dim, hidden=args.hidden, layers=args.layers, out_dim=out_dim).to(DEVICE)
-    loss_fn = nn.HuberLoss(delta=1.0)
-    opt = torch.optim.Adam(model.parameters(), lr=1e-3, weight_decay=1e-4)
+    model = LSTMDef(in_dim, 
+                    hidden = args.hidden, 
+                    layers = args.layers, 
+                    out_dim = out_dim).to(DEVICE)
+    
+    # huber loss: MAE와 MSE의 장점을 결합한 '손실 함수'
+    # 오차가 적을땐 MSE처럼 작동하여 민감하게 반응하고
+    # 오차가 많을땐 MAE처럼 작동하여 이상치에 둔감함
+    # 데이터에 이상치가 존재하는 경우에 자주 사용됨
+    loss_func = nn.HuberLoss(delta=1.0)
 
-    def run_epoch(dl, train=True):
-        model.train(mode=train)
+    # adam 옵티마이저: 딥러닝에서 가장 널리 쓰이는 최적화 알고리즘
+    # RMSProp과 모멘텀(Momentum) 최적화 기법의 장점을 결합한 방식
+    # 지수이동평균으로 누적된 기울기를 보고 판단하여 가중치를 줄이거나 늘리는 등 동적으로 조절함.
+    # 복잡한 모델/데이터, 초기 탐색 속도가 중요, 희소/노이즈 그라디언트 → Adam이 편하고 빠름
+    # SGD+Momentum: 이미지 분류 등 대형 비전 과제에서 최종 일반화가 더 좋은 경우가 많음.
+    # weight_decay: overfitting을 방지하기 위해
+    opt = torch.optim.Adam(model.parameters(), lr = 1e-3, weight_decay = 1e-4)
+#---------------------------------------------
+    def run_epoch(dl, train = True):
+        model.train(mode = train)
         tot, n = 0.0, 0
         for xb, yb in dl:
             xb, yb = xb.to(DEVICE), yb.to(DEVICE)
             with torch.set_grad_enabled(train):
                 pred = model(xb)
-                loss = loss_fn(pred, yb)
+                loss = loss_func(pred, yb)
                 if train:
                     opt.zero_grad(); loss.backward()
                     nn.utils.clip_grad_norm_(model.parameters(), 1.0)
