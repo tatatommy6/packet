@@ -1,9 +1,12 @@
-# train_pytorch.py
 # ------------------------------------------------------------
 # preprocess.py가 만든 .npz 파일을 읽어 PyTorch LSTM을 학습합니다.
 #
 # 사용법:
 #   python train_lstm.py --data data/prepared.npz --epochs 30
+# 옵션:
+#   --hidden: 은닉층 개수 지정(64 ~ 512)
+#   --dropout: 드롭아웃 지정(0.2 ~ 0.4)
+#   --lr: 학습률 지정(1e-1 ~ 1e-4)
 # ------------------------------------------------------------
 import random
 import argparse, os
