@@ -124,58 +124,69 @@ def main():
     # weight_decay: overfitting을 방지하기 위해
     opt = torch.optim.Adam(model.parameters(), lr = 1e-3, weight_decay = 1e-4)
 
-    # 한 에폭동안의 평균 손실 값을 return함
-    def run_epoch(dataloader, train = True):
-        model.train(mode = train)
+    # 한 에폭 동안의 평균 손실값(Huber, sample-weighted mean)을 반환
+    def run_epoch(dataloader, train=True):
+        model.train(mode=train)
         total, n = 0.0, 0
         for input_batch, answer_batch in dataloader:
-            input_batch, answer_batch = input_batch.to(DEVICE), answer_batch.to(DEVICE)
-            with torch.set_grad_enabled(train): # 학습 모드일때만 그래디언트 계산 활성화
-                pred = model(input_batch) # lstm모델에 입력을 전달해 예측값 생성
-                loss = loss_func(pred, answer_batch) # 손실함수 계산
-                if train: # 학습 모드일 경우
-                    opt.zero_grad(); loss.backward() # 옵티마이저의 그래디언트를 초기화하고 / 손실의 그래디언트를 계산함.
-                    nn.utils.clip_grad_norm_(model.parameters(), 1.0) # clip_grad_norm(): 그래디언트 클리핑을 통해 그래디언트 폭파를 막음
-                    opt.step() # 가중치 업데이트
-            total += loss.item() * len(input_batch) # 손실 값 누적
-            n += len(input_batch) # 샘플 개수 증가
-        return total / max(n,1)
+            input_batch = input_batch.to(DEVICE)
+            answer_batch = answer_batch.to(DEVICE)
 
-# 타깃별 MAE를 담은 numpy array return
-# 예시: [pkt, tcp, udp]
+            # 학습 모드일 때만 그래디언트 계산 활성화
+            with torch.set_grad_enabled(train):
+                pred = model(input_batch)                     # 모델 전방향 패스
+                loss = loss_func(pred, answer_batch)          # 손실 계산 (HuberLoss, reduction='mean' 가정)
+                if train:
+                    opt.zero_grad()
+                    loss.backward()                            # 그래디언트 계산
+                    nn.utils.clip_grad_norm_(model.parameters(), 1.0)  # 그래디언트 클리핑(폭주 방지)
+                    opt.step()                                 # 가중치 업데이트
+
+            bs = input_batch.size(0)
+            total += loss.item() * bs  # per-batch mean × batch_size -> 샘플 합 손실 누적
+            n += bs                    # 전체 샘플 수 누적
+
+        return total / max(n, 1)       # 전체 샘플 기준 평균 손실
+
+    # 타깃별 MAE를 numpy array로 반환 (예: [pkt, tcp, udp])
     def epoch_mae_vec(dataloader):
-        model.eval() # 평가 모드로 설정
-        k = len(target_cols) # topk(타깃)의 개수
-        total = torch.zeros(k) # 타깃별 mae를 누적할 텐서 초기화
+        model.eval()
+        k = len(target_cols)                          # 타깃 차원 수
+        total = torch.zeros(k, dtype=torch.float32)   # 타깃별 MAE 합 누적
         n = 0
         with torch.no_grad():
             for input_batch, output_batch in dataloader:
                 input_batch = input_batch.to(DEVICE)
-                pred = model(input_batch).cpu()
-                total += torch.abs(pred - output_batch).sum(dim=0)  # 예측값과 정답의 절대오차를 계산하고 타깃별로 합산
-                n += len(output_batch) 
-        return (total / max(n, 1)).numpy()
+                pred = model(input_batch).cpu().float()
+                output_batch = output_batch.cpu().float()
 
-    # --- 가중치 (중요도에 맞춰 조절 가능) ---
-    w = np.array([1.7, 1.0, 1.0], dtype=np.float32)  # 예: pkt 덜 중요하면 [0.5,1.0,1.0] 등
+                # |pred - y|을 배치 차원(0)으로 합산 → 타깃별 절대오차의 합
+                total += torch.abs(pred - output_batch).sum(dim=0) #dim=0 -> 컬럼 별로 더한 값
+                n += output_batch.size(0)
+        return (total / max(n, 1)).numpy()            # 타깃별 평균 MAE
 
-    best_score = float('inf')   # 현재까지 최적 검증 점수, 초기값은 양의 무한대(inf)
-    best_ep = -1 #최적 점수를 기록한 에폭 번호
-    best_valid_huber = float('inf') #최적 검증 소실
+    # --- 가중치 (타깃 중요도 조절) ---
+    # 예: pkt를 덜 중요하게 보고 싶다면 [0.5, 1.0, 1.0], 더 중요하면 [1.7, 1.0, 1.0] 등으로 조절
+    w = np.array([1.7, 1.0, 1.0], dtype=np.float32)
 
-    for epoch in range(1, args.epochs + 1): #어규먼트에서 받은 에폭 수 + 1 만큼 반복
-        train_huber = run_epoch(dataloader_train, True)          # 학습 손실(Huber, mean)
-        valid_huber = run_epoch(dataloader_valid, False)         # 검증 손실(Huber, mean)
-        valid_mae_vector = epoch_mae_vec(dataloader_valid)       # [pkt, tcp, udp] MAE
-        valid_score   = float((valid_mae_vector * w).sum())      # 저장 판단용 점수
+    best_score = float('inf')     # 현재까지 최적(낮을수록 좋음) 검증 점수
+    best_ep = -1                  # 최적 점수 에폭
+    best_valid_huber = float('inf')
 
-        improved = valid_score < best_score #현재 에폭의 점수가 최적 점수보다 낮은지 확인
-        if improved: 
+    for epoch in range(1, args.epochs + 1):
+        train_huber = run_epoch(dataloader_train, True)
+        valid_huber = run_epoch(dataloader_valid, False)
+        valid_mae_vector = epoch_mae_vec(dataloader_valid)   # [pkt, tcp, udp] MAE
+        valid_score = float((valid_mae_vector * w).sum())    # 저장 판단 기준(가중합)
+
+        improved = valid_score < best_score
+        if improved:
             best_score = valid_score
             best_ep = epoch
             best_valid_huber = valid_huber
             state = {
-                "model": model.state_dict(),
+                "model": model.state_dict(), #state_dict(): 학습가능한 매개변수가 담겨있는 딕셔너리(Dictionary). 가중치와 편향이 이에 해당함
+                # "optimizer": opt.state_dict(),  # (선택) 재개용
                 "epoch": epoch,
                 "val_huber": valid_huber,
                 "val_mae_vec": valid_mae_vector,
@@ -188,12 +199,17 @@ def main():
                 "scaler_mean": scaler_mean,
                 "scaler_scale": scaler_scale,
             }
-            torch.save(state, args.ckpt) #state를 어규먼트에서 지정된 경로에 저장
-            #매 에폭마다 출력
-            print(f"[BEST] epoch={epoch} val_score(MAE·w)={valid_score:.4f} vec={np.round(valid_mae_vector, 4)}")
+            torch.save(state, args.ckpt)
+            print(f"[BEST] epoch={epoch} val_score(MAE·w-sum)={valid_score:.4f} vec={np.round(valid_mae_vector, 4)}")
 
-        if epoch % 5 == 0 or epoch == 1: #에폭 5번에 한번씩
-            print(f"epoch: {epoch:02d} train(huber) {train_huber:.4f} | valid(huber) {valid_huber:.4f} | valid(MAE·sum) {valid_mae_vector.sum():.4f} | best@{best_ep} {best_score:.4f}")
+        if epoch % 5 == 0 or epoch == 1:
+            print(
+                f"epoch: {epoch:02d} "
+                f"train(huber) {train_huber:.4f} | valid(huber) {valid_huber:.4f} | "
+                f"valid(MAE·w-sum) {(valid_mae_vector*w).sum():.4f} | "
+                f"valid(MAE·sum) {valid_mae_vector.sum():.4f} | "
+                f"best@{best_ep} {best_score:.4f}"
+            )
 #----------------------------------------------
     # 3) 테스트 평가
     ckpt = torch.load(args.ckpt, map_location=DEVICE, weights_only=False)
