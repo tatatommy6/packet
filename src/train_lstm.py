@@ -179,8 +179,7 @@ def main():
         valid_mae_vector = epoch_mae_vec(dataloader_valid)   # [pkt, tcp, udp] MAE
         valid_score = float((valid_mae_vector * w).sum())    # 저장 판단 기준(가중합)
 
-        improved = valid_score < best_score
-        if improved:
+        if valid_score < best_score:
             best_score = valid_score
             best_ep = epoch
             best_valid_huber = valid_huber
