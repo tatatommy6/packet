@@ -1,31 +1,33 @@
 # 📡 DDoS Early Warning with LSTM
 
-> **카페/가정/캠퍼스 네트워크에서 패킷을 10초 단위로 집계하고,  
-> LSTM으로 다음 구간의 트래픽 특성(패킷 수, TCP/UDP 비율)을 예측해  
-> DDoS 전조를 조기 감지하는 '경량' 프로젝트**  
-> *(원래 QoS(최종 사용자에게 제공되는 네트워크 품질) 예측 프로젝트에서 학습·분석 결과를 바탕으로 DDoS 조기경보로 피벗)*
+> **This is a lightweight program that predicts DDoS in advance
+by aggregating packets into 10-second utils in café, home and campus networks,
+predicting traffic characteristics of the next time window using an LSTM model**
+
+> *(Originaly it was a QoS(network quality delivered to end devices) predict project, bui it later pivoted into DDoS early warning project based on learning and analysis results)*
 
 ---
 
 ## 🔎 Introduction
-- 공용/가정망에서 발생하는 **트래픽 구성 변화**(특히 UDP 급증)를 시계열로 분석
-- 패킷 데이터를 **10초 윈도우**로 집계 → LSTM이 처리할 **(N, T, F)** 시퀀스로 변환
-- **목표:** 다음 10초의 `pkt_count`, `tcp_ratio`, `udp_ratio`를 예측하여 **조기경보 트리거**에 활용
-- **현재 상태:**  
-  - 모델 학습 완료 
-  - 테스트셋에서 **비율 예측 MAE -> 0.10~0.12** 확인  
-  - **실전(실시간) 테스트는 아직 미실시**
-
+- Analyzed time-series changes in traffic composition(especially UDP) in public and indoor.
+- collect packet data in **10-second windows** -> convert to a sequence **(N, T, F)** to be processed by LSTM 
+- **goal:** predict `pkt_count`, `tcp_ratio`, `udp_ratio` in next 10 seconds and use them as triggers for early warning.
+- **current status**  
+  - model training complete
+  - 테스트셋에서 **비율 예측 MAE -> 0.10~0.12** 확인
+  - The **prediction MAE was measured at approximately 0.10–0.12** on the test set.
+  - **Real-world testing** has not yet begun.
+  
 ---
 
-## 🎯 Why (왜 만들었나)
+## 🎯 Purpose
 - **네트워크 다운타임 -> 서비스 중단 등 직접적인 손실 발생**  
 - 중소규모 환경(소상공인, 학원, 동호회 서버 등)도 **UDP/소형 패킷 급증** 같은 **공격 전조**가 발생할 수 있음  
 - 상용 방어 제품은 “발생 시 완화”에 강점 → 본 프로젝트는 **온프레미스에서 가볍게 돌릴 수 있는 조기경보**에 초점
 
 ---
 
-## 📈 데이터셋 제작 과정
+## 📈 Dataset creation process
 - 라즈베리파이로 iperf3을 이용해 서버를 연 후, 클라이언트 쪽에서 서버에 부하를 2시간 동안 랜덤하게 주어 다양한 형태의 데이터 수집 (Wireshark 활용)
 - 이후 6시간 동안 일부러 부하를 주지 않으면서(집안의 다양한 기기들의 트래픽만 받음) 평상시의 데이터도 수집 (Wireshark 활용)
 - 총 26840초(7.9시간)동안 428326개의 패킷 수집 (Wireshark 활용)
